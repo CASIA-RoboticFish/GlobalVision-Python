@@ -10,11 +10,16 @@ import yaml
 import cv2
 from PyQt5 import QtCore,QtGui,QtWidgets
 import numpy as np
+import queue
 
 import gxipy as gx
 import imageprocess
 import serctl # 串口控制工具
 import rflink # Robotic Fish 通讯协议
+
+
+# 图像存储线程锁
+ir_mutex = QtCore.QMutex()
 
 ## 这个类帮助在图片中绘制矩形，给KCF算法作为初始ROI
 class ImageLabel(QtWidgets.QLabel):
@@ -56,6 +61,81 @@ class ImageLabel(QtWidgets.QLabel):
         self.y1 = 0
 
 
+#########################################################################################################
+class ImageRecordThread(QtCore.QThread): # 图像存储线程
+    """
+    本类创建一个图像储存线程
+    """
+    def __init__(self,parent=None):
+        super(ImageRecordThread, self).__init__(parent)
+        self.videowriter = None
+        self.record_img_queue = queue.Queue()
+        self.add_image_flag = False
+        self.record_stop_flag = False
+        self.is_running = False
+        self.is_pause = False
+        self._sync = QtCore.QMutex()
+        self._pause_cond = QtCore.QWaitCondition()
+
+    def run(self):
+        """
+        本线程运行的主要循环
+        """
+        self.is_running = True
+        while self.is_running == True:
+            self._sync.lock()
+            if self.is_pause:
+                self._pause_cond.wait(self._sync)
+            self._sync.unlock()
+            # 接收数据
+            ir_mutex.lock()
+            if not self.record_img_queue.empty(): # 判断队列是否为空
+                if self.videowriter is not None: # 判断视频对象是否为空
+                    bgr = cv2.cvtColor(self.record_img_queue.get(), cv2.COLOR_RGB2BGR)
+                    self.videowriter.write(bgr)
+            else:
+                if self.record_stop_flag:
+                    self.videowriter.release()
+                    self.pause()
+            ir_mutex.unlock()
+
+    def pause(self):
+        """
+        暂停线程
+        """
+        self._sync.lock()
+        self.is_pause = True
+        self._sync.unlock()
+
+    def resume(self):
+        """
+        恢复线程
+        """
+        self._sync.lock()
+        self.is_pause = False
+        self._sync.unlock()
+        self._pause_cond.wakeAll()
+
+    def stop(self):
+        """
+        终止线程,一旦调用,本线程将无法再打开
+        """
+        self.is_running = False
+        self.terminate()
+
+    def set_image(self, img):
+        self.add_image_flag = True
+        self.record_img_queue.put(img)
+
+    def reset_videowriter(self, videoname):
+        self.add_image_flag = False
+        self.record_stop_flag = False
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        self.videowriter = cv2.VideoWriter(videoname, fourcc, 20, (1292, 964))
+    
+    def stop_record(self):
+        self.record_stop_flag = True
+
 ## 主窗口
 class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
 
@@ -64,6 +144,8 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
     # 初始化
     def __init__(self):
         super(GLOBALVISION, self).__init__()
+         # 创建线程
+        self.image_record_thread = ImageRecordThread()
         # 初始化串口
         self.serialtool = serctl.Serial()
         # 初始化RFLink
@@ -100,8 +182,8 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.cam_exposure = camera_param['Camera']['exposure']
         # 视频变量
         self.image = None
-        self.video_frame_rate = 20
-        self.video_frame_interval = 50 # 1000/self.video_frame_rate
+        self.video_frame_rate = 100
+        self.video_frame_interval = 10 # 1000/self.video_frame_rate
         self.cam = None
         self.cam_device_manager = None
         self.cam_gamma_lut = None
@@ -170,6 +252,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.statusBar().showMessage('欢迎使用全局视觉测量软件')
         self.setFixedSize(1500, 1000)# 设置窗体大小
         self.setWindowTitle('全局视觉测量软件')  # 设置窗口标题
+        self.setWindowIcon(QtGui.QIcon('fish.png'))
         self.show()  # 窗口显示
 
     # 初始化layout界面
@@ -222,6 +305,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.detectstamp_checkbox.setChecked(False)
         self.background_checkbox = QtWidgets.QCheckBox("背景减除")
         self.background_checkbox.setChecked(False)
+        self.background_checkbox.setEnabled(False)
 
         # 参数调节
         self.param_adjust_label = QtWidgets.QLabel('参数调节')
@@ -263,8 +347,10 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         # self.save_parameter_button.setFixedSize(90,25)
         self.save_background_button = QtWidgets.QPushButton('拍摄背景')
         # self.save_parameter_button.setFixedSize(90,25)
+        self.save_background_button.setEnabled(False)
         self.set_kcfroi_button = QtWidgets.QPushButton('设置跟踪对象')
         # self.save_parameter_button.setFixedSize(90,25)
+        # self.set_kcfroi_button.setEnabled(False)
 
         # 串口控制
         self.serial_control_label = QtWidgets.QLabel('串口控制')
@@ -395,17 +481,25 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
 
     def play_video(self):
         if (self.camera_flag):
+            # t0 = cv2.getTickCount()
+
             # 获取图像
             self.camera_time = time.time() - self.camera_start_time
             img = self.acq_color()
+            if img is None:
+                return
 
             if self.time_show_flag:
                 self.add_time(img)
 
             if self.recordvideo_flag:
-                bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                self.videowriter.write(bgr)
-
+                # bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                # self.videowriter.write(img)
+                # 数据送入新线程队列
+                ir_mutex.lock()
+                self.image_record_thread.set_image(img)
+                ir_mutex.unlock()
+                
             # 背景减除功能
             if self.background_sub_flag:
                 img = self.background_sub(img)
@@ -441,6 +535,11 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
 
             # 恢复detect_success_flag
             self.detect_success_flag = False
+
+            # t1 = cv2.getTickCount()
+            # duration = (t1-t0)/cv2.getTickFrequency()
+            # print(duration)
+
 
     def acq_color(self):
         # send software trigger command
@@ -577,17 +676,29 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
             else:
                 p1 = (int(self.kcfroi[0]), int(self.kcfroi[1]))
                 p2 = (int(self.kcfroi[0] + self.kcfroi[2]), int(self.kcfroi[1] + self.kcfroi[3]))
-                # 先用Kmeans分割图像
+                # # 先用Kmeans分割图像
+                # roi = blur[p1[1]:p2[1],p1[0]:p2[0],:]
+                # kmeansroi = imageprocess.kmeans(roi)
+                # # 再用HSV分割颜色
+                # kmeansroihsv = cv2.cvtColor(kmeansroi, cv2.COLOR_BGR2HSV)
+                # red_ellipse = imageprocess.detect_ellipse(kmeansroihsv, red_color_low, red_color_high)
+                # if red_ellipse is not None:
+                #     ellipse_center = red_ellipse[0]
+                #     red_x = round(ellipse_center[0]) + int(self.kcfroi[0])
+                #     red_y = round(ellipse_center[1]) + int(self.kcfroi[1])
+                # yellow_ellipse = imageprocess.detect_ellipse(kmeansroihsv, yellow_color_low, yellow_color_high)
+                # if yellow_ellipse is not None:
+                #     ellipse_center = yellow_ellipse[0]
+                #     yellow_x = round(ellipse_center[0]) + int(self.kcfroi[0])
+                #     yellow_y = round(ellipse_center[1]) + int(self.kcfroi[1])
                 roi = blur[p1[1]:p2[1],p1[0]:p2[0],:]
-                kmeansroi = imageprocess.kmeans(roi)
-                # 再用HSV分割颜色
-                kmeansroihsv = cv2.cvtColor(kmeansroi, cv2.COLOR_BGR2HSV)
-                red_ellipse = imageprocess.detect_ellipse(kmeansroihsv, red_color_low, red_color_high)
+                roihsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                red_ellipse = imageprocess.detect_ellipse(roihsv, red_color_low, red_color_high)
                 if red_ellipse is not None:
                     ellipse_center = red_ellipse[0]
                     red_x = round(ellipse_center[0]) + int(self.kcfroi[0])
                     red_y = round(ellipse_center[1]) + int(self.kcfroi[1])
-                yellow_ellipse = imageprocess.detect_ellipse(kmeansroihsv, yellow_color_low, yellow_color_high)
+                yellow_ellipse = imageprocess.detect_ellipse(roihsv, yellow_color_low, yellow_color_high)
                 if yellow_ellipse is not None:
                     ellipse_center = yellow_ellipse[0]
                     yellow_x = round(ellipse_center[0]) + int(self.kcfroi[0])
@@ -989,14 +1100,24 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
             videoname = 'video/' + str(now_time.year-2000).zfill(2) + str(now_time.month).zfill(2) + str(now_time.day).zfill(2) + \
                         str(now_time.hour).zfill(2) + str(now_time.minute).zfill(2) + str(now_time.second).zfill(2) + '.avi'
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            self.videowriter = cv2.VideoWriter(videoname, fourcc, self.video_frame_rate, (1292, 964))
+            # 通过多线程来记录视频数据
+            if self.image_record_thread.is_running is False:
+                self.image_record_thread.start()
+            else:
+                self.image_record_thread.resume()
+            self.image_record_thread.reset_videowriter(videoname)
+            # 原本的方法
+            # self.videowriter = cv2.VideoWriter(videoname, fourcc, self.video_frame_rate, (1292, 964))   
             filename = 'video/' + str(now_time.year-2000).zfill(2) + str(now_time.month).zfill(2) + str(now_time.day).zfill(2) + \
                         str(now_time.hour).zfill(2) + str(now_time.minute).zfill(2) + str(now_time.second).zfill(2) + '.txt'
             self.filewriter = open(filename, 'w')
         else:
             self.recordvideo_flag = False
             self.record_video_button.setText('录制视频')
-            self.videowriter.release()
+            # 通过多线程来记录视频数据
+            self.image_record_thread.stop_record()
+            # 原本的方法
+            # self.videowriter.release()
             self.filewriter.close()
         st = self.statusbar_text()
         self.statusBar().showMessage(st)
@@ -1071,7 +1192,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         if self.camera_flag:
             statustext = statustext + '相机已打开，'
             if self.detection_flag:
-                pass
+                statustext = statustext + '检测已启用，'
             else:
                 statustext = statustext + '检测未启用，'
         else:
