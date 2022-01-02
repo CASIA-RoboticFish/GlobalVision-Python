@@ -80,6 +80,12 @@ def recontruct_point(image_point, depth, K, D):
     world_point = np.reshape(world_point, (2,))
     return world_point
 
+def project_point(world_point, K, D):
+    rvec = np.zeros((3,1))
+    tvec = np.zeros((3,1))
+    image_point, jacobian = cv2.projectPoints(world_point, rvec, tvec, K, D)
+    return image_point
+
 def undistort_image(distorted_image, K, D):
     undistorted_image = cv2.undistort(distorted_image, K, D)
     cv2.imshow('distort', distorted_image)

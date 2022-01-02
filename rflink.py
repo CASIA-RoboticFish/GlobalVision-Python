@@ -95,6 +95,9 @@ Command = Enum('Command',(\
     # 静态吸附指令
     'SET_STATIC_ATTACH_START',\
     'SET_STATIC_ATTACH_STOP',\
+    # 动态吸附指令
+    'SET_DYNAMIC_ATTACH_START',\
+    'SET_DYNAMIC_ATTACH_STOP',\
     # 电磁阀控制指令
     'SET_VALVE_ON',\
     'SET_VALVE_OFF',\
@@ -120,6 +123,7 @@ Command = Enum('Command',(\
     'SET_FLYWHEEL_DATA',\
     'SET_FLYWHEEL_CMD',\
     # 吸排水控制指令
+    'SET_BALLAST_INIT',\
     'SET_BALLAST_POS',\
     'SET_BALLAST_POS_ADD',\
     'SET_BALLAST_POS_ZERO',\
@@ -133,12 +137,16 @@ Command = Enum('Command',(\
     'SET_CAMERA_PWM',\
     # 其他控制指令
     'SET_TARGET_POS',\
+    'SET_GLOBAL_POS',\
     'SET_DATASHOW_OVER',\
-    'SET_DEPTHCTL_START',\
-    'SET_DEPTHCTL_STOP',\
+    'SET_APP_START',\
+    'SET_APP_STOP',\
     'SET_DEPTH_TARGET',\
     'SET_DEPTHCTL_K1',\
     'SET_DEPTHCTL_K2',\
+    'SET_DEPTHPID_P',\
+    'SET_DEPTHPID_I',\
+    'SET_DEPTHPID_D',\
     'SET_PID_P',\
     'SET_PID_I',\
     'SET_PID_D',\
@@ -161,6 +169,7 @@ Command = Enum('Command',(\
     'READ_FLYWHEEL_ANGLE',\
     'READ_FLYWHEEL_VEL',\
     'READ_DEPTH',\
+    'READ_GENERAL_DATA',\
     'READ_FILE_LIST',\
     'GOTO_ATTACH',\
     'GOTO_DETACH',\

@@ -11,6 +11,7 @@ import cv2
 from PyQt5 import QtCore,QtGui,QtWidgets
 import numpy as np
 import queue
+import socket # 网络数据传输
 
 import gxipy as gx
 import imageprocess
@@ -238,6 +239,17 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.red_point_img_pos_y = 0
         self.yellow_point_img_pos_x = 0
         self.yellow_point_img_pos_y = 0
+
+        # 移动目标
+        self.move_target_flag = True
+        self.move_target_x = -2.5
+        self.move_target_y = 2.0
+        self.move_vel = 0.15
+        self.move_target_yaw = -0.6747
+        self.relative_pos = np.zeros((2,))
+        self.relative_angle = 0.0
+        self.move_target_imgpos = np.zeros((2,))
+
         # 初始化UI
         self.init_ui()
         self.widget_connect()
@@ -382,7 +394,6 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         # self.serial_open_button.setFixedSize(90,25)
         self.serial_close_button = QtWidgets.QPushButton('停止发送')
         # self.serial_close_button.setFixedSize(90,25)
-
 
         # 布局,29行17列
         row_cnt = 0
@@ -837,7 +848,23 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
                     self.roi_reset_cnt = 0
         else:
             self.detect_success_flag = False
-  
+
+        # 如果发送串口数据，可以假设有一个移动目标在运动，沿着X轴在运动
+        if self.detect_success_flag and self.move_target_flag and self.serialport_flag:
+            # 更新移动目标位置
+            self.move_target_x = self.move_target_x + math.cos(self.move_target_yaw)*self.move_vel* self.time_interval
+            self.move_target_y = self.move_target_y + math.sin(self.move_target_yaw)*self.move_vel* self.time_interval
+            # 计算二者相对位姿
+            self.relative_pos[0] = math.cos(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
+                                    +math.sin(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
+            self.relative_pos[1] = -math.sin(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
+                                    +math.cos(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
+            self.relative_angle = self.now_angle - self.move_target_yaw
+            #print(self.relative_pos)
+        else:
+            self.move_target_x = -2.5
+            self.move_target_y = 2.0
+
         # 绘图
         # 坐标系
         origin_point = (25,15)
@@ -853,9 +880,12 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
  
         if self.detectstamp_show_flag:
             #
-            origin_point = (641+25,471+15)
-            x_point = (641+75, 471+15)
-            y_point = (641+25, 471+65)
+            # origin_point = (641+25,471+15)
+            # x_point = (641+75, 471+15)
+            # y_point = (641+25, 471+65)
+            origin_point = (641,471)
+            x_point = (641+55, 471)
+            y_point = (641, 471+55)
             img = cv2.line(img, origin_point, x_point, (255, 0, 0), 2, 4)
             img = cv2.line(img, origin_point, y_point, (0, 255, 0), 2, 4)
             img = cv2.circle(img, origin_point, 2, (255,0,0), 2)
@@ -892,6 +922,27 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
                     img = cv2.circle(img, move_origin_point, 2, (0,0,255), 4)
                     pos_str = "pos:[" + str(int((yellow_point_pos[0]+red_point_pos[0])/2*1000)) + ", " + str(int((yellow_point_pos[1]+red_point_pos[1])/2*1000)) + "] mm"
                     cv2.putText(img, pos_str, (move_origin_point[0], move_origin_point[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            # 显示移动目标
+            if self.move_target_flag:
+                worldpoints = np.array([[-2.5, 2.0, self.target_depth],
+                                        [2.5, -2.0, self.target_depth]])
+                self.move_target_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
+                path_p1 = (int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1]))
+                path_p2 = (int(self.move_target_imgpos[1][0][0]), int(self.move_target_imgpos[1][0][1]))
+                img = cv2.line(img, path_p1, path_p2, (0, 0, 255), 1, 4)
+            if self.detect_success_flag and self.move_target_flag and self.serialport_flag:
+                # 更新移动目标位置
+                worldpoints = np.array([[self.move_target_x, self.move_target_y, self.target_depth]])
+                self.move_target_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
+                move_target_point = (int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1]))
+                img = cv2.circle(img, move_target_point, 15, (255,255,0), 4)
+                #target_p1 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]-5))
+                #target_p2 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]+5))
+                #target_p3 = (int(self.move_target_imgpos[0][0][0]+5), int(self.move_target_imgpos[0][0][1]))
+                #img = cv2.line(img, target_p1, target_p2, (0, 0, 255), 3, 4)
+                #img = cv2.line(img, target_p2, target_p3, (0, 0, 255), 3, 4)
+                #img = cv2.line(img, target_p3, target_p1, (0, 0, 255), 3, 4)
+            
 
         result = img
         return result
@@ -899,7 +950,9 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
     def send_rflink_data(self):
         # Todo:加入要发送什么的指令和数据
         data = struct.pack("f", self.now_position[0]) + struct.pack("f", self.now_position[1]) + struct.pack("f", self.now_angle)
-        datapack = self.rftool.RFLink_packdata(rflink.Command.SET_TARGET_POS.value, data)
+        if self.move_target_flag:
+            data = struct.pack("f", self.relative_pos[0]) + struct.pack("f", self.relative_pos[1]) + struct.pack("f", self.relative_angle)
+        datapack = self.rftool.RFLink_packdata(rflink.Command.SET_GLOBAL_POS.value, data) # 发送全局视觉数据
         try:
             self.serialtool.write_cmd(datapack)
         except serial.serialutil.SerialException:

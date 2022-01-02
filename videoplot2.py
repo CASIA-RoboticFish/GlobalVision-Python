@@ -5,12 +5,12 @@ import numpy as np
 import math
 
 if __name__ == '__main__':
-    videoname = 'G:/机器鱼/静态吸附/位置控制实验/选择的实验/210609201201_new.avi'
+    videoname = 'G:/PythonCode/GlobalVisionHost/video/运动模态视频/胸鳍右转.avi'
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     videowriter = cv2.VideoWriter(videoname, fourcc, 25, (1292, 964))
 
-    data = np.loadtxt('G:/机器鱼/静态吸附/位置控制实验/选择的实验/210609201201.txt')
-    cap = cv2.VideoCapture("G:/机器鱼/静态吸附/位置控制实验/选择的实验/210609201201.avi")
+    data = np.loadtxt('G:/PythonCode/GlobalVisionHost/video/运动模态视频/210624150049.txt')
+    cap = cv2.VideoCapture("G:/PythonCode/GlobalVisionHost/video/运动模态视频/210624150049.avi")
     row_cnt = 0
     while(cap.isOpened()):
         ret, frame = cap.read()
@@ -28,16 +28,16 @@ if __name__ == '__main__':
 
 
             # 固定坐标系
-            origin_point = (641+25,471+15)
-            x_point = (641+75, 471+15)
-            y_point = (641+25, 471+65)
-            frame = cv2.line(frame, origin_point, x_point, (0, 0, 255), 2, 4)
-            frame = cv2.line(frame, origin_point, y_point, (0, 255, 0), 2, 4)
-            frame = cv2.circle(frame, origin_point, 2, (0,0,255), 2)
-            frame = cv2.circle(frame, x_point, 2, (0,0,255), 2)
-            frame = cv2.circle(frame, y_point, 2, (0,255,0), 2)
-            cv2.putText(frame, 'x', (641+85, 471+20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-            cv2.putText(frame, 'y', (641+20, 471+85), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+            # origin_point = (641+25,471+15)
+            # x_point = (641+75, 471+15)
+            # y_point = (641+25, 471+65)
+            # frame = cv2.line(frame, origin_point, x_point, (0, 0, 255), 2, 4)
+            # frame = cv2.line(frame, origin_point, y_point, (0, 255, 0), 2, 4)
+            # frame = cv2.circle(frame, origin_point, 2, (0,0,255), 2)
+            # frame = cv2.circle(frame, x_point, 2, (0,0,255), 2)
+            # frame = cv2.circle(frame, y_point, 2, (0,255,0), 2)
+            # cv2.putText(frame, 'x', (641+85, 471+20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+            # cv2.putText(frame, 'y', (641+20, 471+85), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
 
             # 显示红色marker
