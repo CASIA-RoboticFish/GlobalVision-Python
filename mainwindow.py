@@ -160,16 +160,19 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         paramfile = open(self.paramfilepath, 'r', encoding='utf-8')
         paramdata = paramfile.read()
         self.hsvparam = yaml.load(paramdata)
-
         # 读取背景图像
         self.backgroundpath = 'background.jpg'
         try:
             self.background = cv2.imread(self.backgroundpath, cv2.IMREAD_GRAYSCALE)
         except:
             self.background = None
-
+        # 打开相机编号
+        self.camera_type = 'WebCam' # 'WebCam'代表电脑摄像头，'GlobalCam'代表全局摄像头 
         # 读取Camera参数
-        self.camerafilepath = 'config/camera.yml'
+        if self.camera_type == 'WebCam':
+            self.camerafilepath = 'config/webcamera.yml'
+        elif self.camera_type == 'GlobalCam':
+            self.camerafilepath = 'config/camera.yml'
         camerafile = open(self.camerafilepath, 'r', encoding='utf-8')
         camerainfo = camerafile.read()
         camera_param = yaml.load(camerainfo)
@@ -185,6 +188,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.image = None
         self.video_frame_rate = 100
         self.video_frame_interval = 10 # 1000/self.video_frame_rate
+        self.webcam = None
         self.cam = None
         self.cam_device_manager = None
         self.cam_gamma_lut = None
@@ -242,12 +246,20 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
 
         # 移动目标
         self.move_target_flag = True
-        self.move_target_x = -2.5
-        self.move_target_y = 2.0
+        self.move_nowtime = None
+        self.move_pretime = None
+        self.move_target_x = -2.25
+        self.move_target_y = 1.8
         self.move_vel = 0.15
         self.move_target_yaw = -0.6747
+        self.vision_mode = 0 # 0代表什么都看不到，1代表看到准确位置，2代表看到目标方向
+        self.vision_radius1 = 200 # 这个半径内，可以看到准确位置和目标的航行角
+        self.vision_radius2 = 300 # 这个半径内，可以看到目标方向
         self.relative_pos = np.zeros((2,))
         self.relative_angle = 0.0
+        self.relative_pos_at_fish = np.zeros((2,))
+        self.relative_angle_at_fish = 0.0
+        self.target_angle_at_fish = 0.0
         self.move_target_imgpos = np.zeros((2,))
 
         # 初始化UI
@@ -303,6 +315,8 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         # self.take_photo_button.setFixedSize(90,25)
         self.record_video_button = QtWidgets.QPushButton('录制视频')
         # self.record_video_button.setFixedSize(90,25)
+        self.once_start_button = QtWidgets.QPushButton('一键启动')
+
 
         # 显示控制
         self.display_control_label = QtWidgets.QLabel('显示控制')
@@ -379,7 +393,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.serial_com_combo.addItem('COM12')
         self.serial_com_combo.addItem('COM13')
         self.serial_com_combo.addItem('COM28')
-
+        self.serial_com_combo.setCurrentIndex(7)
         self.serial_bps_label = QtWidgets.QLabel('BPS')
         self.serial_bps_combo = QtWidgets.QComboBox()
         self.serial_bps_combo.addItem('9600')
@@ -411,6 +425,8 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.main_layout.addWidget(self.take_photo_button, row_cnt, 28, 1, 4)
         row_cnt = row_cnt + 1
         self.main_layout.addWidget(self.record_video_button, row_cnt, 28, 1, 4)
+        row_cnt = row_cnt + 1
+        self.main_layout.addWidget(self.once_start_button, row_cnt, 28, 1, 4)
         row_cnt = row_cnt + 1
         self.main_layout.addWidget(self.display_control_label, row_cnt, 28, 1, 4)
         row_cnt = row_cnt + 1
@@ -474,6 +490,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.close_camera_button.clicked.connect(self.close_camera_button_slot)
         self.enable_detect_button.clicked.connect(self.enable_detect_button_slot)
         self.disable_detect_button.clicked.connect(self.disable_detect_button_slot)
+        self.once_start_button.clicked.connect(self.once_start_button_slot)
         self.time_checkbox.clicked.connect(self.time_checkbox_slot)
         self.border_checkbox.clicked.connect(self.border_checkbox_slot)
         self.cameraparam_checkbox.clicked.connect(self.cameraparam_checkbox_slot)
@@ -508,7 +525,7 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
                 # self.videowriter.write(img)
                 # 数据送入新线程队列
                 ir_mutex.lock()
-                self.image_record_thread.set_image(img)
+                # self.image_record_thread.set_image(img)
                 ir_mutex.unlock()
                 
             # 背景减除功能
@@ -530,10 +547,18 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
                          
             # 记录数据
             if self.recordvideo_flag:
-                datastr = ('%.2f' % self.camera_time) + ' ' + ('%.6f' % self.now_angle) + ' ' + ('%.6f' % self.now_angvel) + ' ' + ('%.6f' % self.now_velocity[0]) + ' ' + ('%.6f' % self.now_velocity[1]) + \
-                      ' ' + ('%.6f' % self.now_position[0]) + ' ' + ('%.6f' % self.now_position[1]) + ' ' + ('%.6f' % self.turn_radius)  + ' ' +  ('%.2f' % self.red_point_img_pos_x) + ' ' +  ('%.2f' % self.red_point_img_pos_y) + \
-                      ' ' +  ('%.2f' % self.yellow_point_img_pos_x) + ' ' +  ('%.2f' % self.yellow_point_img_pos_y)+ '\n'
-                self.filewriter.write(datastr)
+                if not self.move_target_flag:
+                    datastr = ('%.2f' % self.camera_time) + ' ' + ('%.6f' % self.now_angle) + ' ' + ('%.6f' % self.now_angvel) + ' ' + ('%.6f' % self.now_velocity[0]) + ' ' + ('%.6f' % self.now_velocity[1]) + \
+                        ' ' + ('%.6f' % self.now_position[0]) + ' ' + ('%.6f' % self.now_position[1]) + ' ' + ('%.6f' % self.turn_radius)  + ' ' +  ('%.2f' % self.red_point_img_pos_x) + ' ' +  ('%.2f' % self.red_point_img_pos_y) + \
+                        ' ' +  ('%.2f' % self.yellow_point_img_pos_x) + ' ' +  ('%.2f' % self.yellow_point_img_pos_y)+ '\n'
+                    self.filewriter.write(datastr)
+                else:
+                    datastr = ('%.2f' % self.camera_time) + ' ' + ('%.6f' % self.now_angle) + ' ' + ('%.6f' % self.now_angvel) + ' ' + ('%.6f' % self.now_velocity[0]) + ' ' + ('%.6f' % self.now_velocity[1]) + \
+                        ' ' + ('%.6f' % self.now_position[0]) + ' ' + ('%.6f' % self.now_position[1]) + ' ' + ('%.6f' % self.turn_radius) + \
+                        ' ' + ('%.2f' % self.red_point_img_pos_x) + ' ' +  ('%.2f' % self.red_point_img_pos_y) + \
+                        ' ' + ('%.2f' % self.yellow_point_img_pos_x) + ' ' +  ('%.2f' % self.yellow_point_img_pos_y) +\
+                        ' ' + ('%.6f' % self.move_target_x) +  ' ' + ('%.6f' % self.move_target_y) +  ' ' + ('%.6f' % self.move_target_yaw) + '\n'
+                    self.filewriter.write(datastr)
             
             # 保存当前帧
             self.image = img
@@ -553,31 +578,35 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
 
 
     def acq_color(self):
-        # send software trigger command
-        self.cam.TriggerSoftware.send_command()
-
-        # get raw image
-        raw_image = self.cam.data_stream[0].get_image()
-        if raw_image is None:
-            print("Getting image failed.")
-            return None
-        # image_ts = raw_image.get_timestamp()
-        # image_id = raw_image.get_frame_id()
-        # get RGB image from raw image
-        rgb_image = raw_image.convert("RGB")
-        if rgb_image is None:
-            return None
-
-        # improve image quality
-        rgb_image.image_improvement(self.cam_color_correction_param, self.cam_contrast_lut, self.cam_gamma_lut)
-
-        # create numpy array with data from raw image
-        numpy_image = rgb_image.get_numpy_array()
-        if numpy_image is None:
-            return None
-
-        # show acquired image
-        img = numpy_image
+        img = None
+        if self.camera_type == 'WebCam':
+            ret,img = self.webcam.read()
+            if ret is False:
+                return None
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (1292,964))
+        elif self.camera_type == 'GlobalCam': 
+            # send software trigger command
+            self.cam.TriggerSoftware.send_command()
+            # get raw image
+            raw_image = self.cam.data_stream[0].get_image()
+            if raw_image is None:
+                print("Getting image failed.")
+                return None
+            # image_ts = raw_image.get_timestamp()
+            # image_id = raw_image.get_frame_id()
+            # get RGB image from raw image
+            rgb_image = raw_image.convert("RGB")
+            if rgb_image is None:
+                return None
+            # improve image quality
+            rgb_image.image_improvement(self.cam_color_correction_param, self.cam_contrast_lut, self.cam_gamma_lut)
+            # create numpy array with data from raw image
+            numpy_image = rgb_image.get_numpy_array()
+            if numpy_image is None:
+                return None
+            # show acquired image
+            img = numpy_image
         return img
 
     def background_sub(self, img):
@@ -850,20 +879,47 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
             self.detect_success_flag = False
 
         # 如果发送串口数据，可以假设有一个移动目标在运动，沿着X轴在运动
-        if self.detect_success_flag and self.move_target_flag and self.serialport_flag:
+        if self.move_target_flag and self.serialport_flag:
+            if self.move_pretime is None:
+                self.move_pretime = time.time()
+                self.move_nowtime = self.move_pretime
+            else:
+                self.move_pretime = self.move_nowtime
+                self.move_nowtime = time.time()
+            time_interval = self.move_nowtime - self.move_pretime
             # 更新移动目标位置
-            self.move_target_x = self.move_target_x + math.cos(self.move_target_yaw)*self.move_vel* self.time_interval
-            self.move_target_y = self.move_target_y + math.sin(self.move_target_yaw)*self.move_vel* self.time_interval
-            # 计算二者相对位姿
-            self.relative_pos[0] = math.cos(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
-                                    +math.sin(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
-            self.relative_pos[1] = -math.sin(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
-                                    +math.cos(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
-            self.relative_angle = self.now_angle - self.move_target_yaw
-            #print(self.relative_pos)
+            self.move_target_x = self.move_target_x + math.cos(self.move_target_yaw)*self.move_vel* time_interval
+            self.move_target_y = self.move_target_y + math.sin(self.move_target_yaw)*self.move_vel* time_interval
+            if self.detect_success_flag:
+                # 计算二者相对位姿，应该是机器鱼在目标坐标系下的位置
+                self.relative_pos[0] = math.cos(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
+                                        +math.sin(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
+                self.relative_pos[1] = -math.sin(self.move_target_yaw)*(self.now_position[0] - self.move_target_x) \
+                                        +math.cos(self.move_target_yaw)*(self.now_position[1] - self.move_target_y)
+                self.relative_angle = self.now_angle - self.move_target_yaw
+                self.relative_pos_at_fish[0] = -math.cos(self.now_angle)*(self.now_position[0] - self.move_target_x) \
+                                            -math.sin(self.now_angle)*(self.now_position[1] - self.move_target_y)
+                self.relative_pos_at_fish[1] = math.sin(self.now_angle)*(self.now_position[0] - self.move_target_x) \
+                                            -math.cos(self.now_angle)*(self.now_position[1] - self.move_target_y)
+                self.target_angle_at_fish = math.atan2(self.relative_pos_at_fish[1], self.relative_pos_at_fish[0])
+                #print(self.relative_pos)
+                # 判断目标和机器鱼的相对关系
+                worldpoints = np.array([[self.now_position[0], self.now_position[1], self.target_depth],\
+                                        [self.move_target_x, self.move_target_y, self.target_depth]])
+                point_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
+                dist = math.sqrt((point_imgpos[0][0][0] - point_imgpos[1][0][0])*(point_imgpos[0][0][0] - point_imgpos[1][0][0]) + \
+                        (point_imgpos[0][0][1] - point_imgpos[1][0][1])*(point_imgpos[0][0][1] - point_imgpos[1][0][1]))
+                if dist < self.vision_radius1:
+                    self.vision_mode = 1 # 发送阶段1的数据
+                elif dist < self.vision_radius2:
+                    self.vision_mode = 2 # 发送阶段2的数据
+                else:
+                    self.vision_mode = 0 # 不发送数据
+            else:
+                self.vision_mode = 0
         else:
-            self.move_target_x = -2.5
-            self.move_target_y = 2.0
+            self.move_target_x = -2.25
+            self.move_target_y = 1.8
 
         # 绘图
         # 坐标系
@@ -879,7 +935,6 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         cv2.putText(img, 'y', (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
  
         if self.detectstamp_show_flag:
-            #
             # origin_point = (641+25,471+15)
             # x_point = (641+75, 471+15)
             # y_point = (641+25, 471+65)
@@ -893,6 +948,36 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
             img = cv2.circle(img, y_point, 2, (0,255,0), 2)
             cv2.putText(img, 'x', (641+85, 471+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
             cv2.putText(img, 'y', (641+20, 471+85), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+             # 显示移动目标
+            if self.move_target_flag:
+                worldpoints = np.array([[-2.5, 2.0, self.target_depth],
+                                        [2.5, -2.0, self.target_depth]])
+                path_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
+                path_p1 = (int(path_imgpos[0][0][0]), int(path_imgpos[0][0][1]))
+                path_p2 = (int(path_imgpos[1][0][0]), int(path_imgpos[1][0][1]))
+                img = cv2.line(img, path_p1, path_p2, (120, 255, 120), 1, cv2.LINE_AA)
+            if self.move_target_flag and self.serialport_flag:
+                # 更新移动目标位置
+                worldpoints = np.array([[self.move_target_x, self.move_target_y, self.target_depth]])
+                self.move_target_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
+                shipborder = np.array([[70,0],[30,-70],[-40,-70],[-40,70],[30,70]],np.int32)
+                rotatemat = np.array([[math.cos(self.move_target_yaw), -math.sin(self.move_target_yaw)],\
+                                      [math.sin(self.move_target_yaw), math.cos(self.move_target_yaw)]])
+                rotshipborder = np.dot(rotatemat, shipborder.T)
+                shipcenter = np.array([int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1])],np.int32)
+                ship = (rotshipborder.T + shipcenter).astype(np.int32)
+                cv2.polylines(img,[ship],True,(120,255,120),3)
+                move_target_point = (int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1]))
+                img = cv2.circle(img, move_target_point, 2, (120,255,120), 6)
+                #img = cv2.circle(img, move_target_point, self.vision_radius1, (255,0,0), 1)
+                #img = cv2.circle(img, move_target_point, self.vision_radius2, (0,255,0), 1)
+                #target_p1 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]-5))
+                #target_p2 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]+5))
+                #target_p3 = (int(self.move_target_imgpos[0][0][0]+5), int(self.move_target_imgpos[0][0][1]))
+                #img = cv2.line(img, target_p1, target_p2, (0, 0, 255), 3, 4)
+                #img = cv2.line(img, target_p2, target_p3, (0, 0, 255), 3, 4)
+                #img = cv2.line(img, target_p3, target_p1, (0, 0, 255), 3, 4)
 
             # 显示红色marker
             if red_ellipse is not None:
@@ -919,29 +1004,10 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
                 if move_x_point_norm > 0.01:
                     move_x_axis = (int(move_origin_point[0]+move_x_point[0]/move_x_point_norm*40), int(move_origin_point[1]+move_x_point[1]/move_x_point_norm*40))
                     img = cv2.line(img, move_origin_point, move_x_axis, (0, 0, 255), 2, 4)
-                    img = cv2.circle(img, move_origin_point, 2, (0,0,255), 4)
+                    img = cv2.circle(img, move_origin_point, 2, (0,0,255), 8)
                     pos_str = "pos:[" + str(int((yellow_point_pos[0]+red_point_pos[0])/2*1000)) + ", " + str(int((yellow_point_pos[1]+red_point_pos[1])/2*1000)) + "] mm"
                     cv2.putText(img, pos_str, (move_origin_point[0], move_origin_point[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-            # 显示移动目标
-            if self.move_target_flag:
-                worldpoints = np.array([[-2.5, 2.0, self.target_depth],
-                                        [2.5, -2.0, self.target_depth]])
-                self.move_target_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
-                path_p1 = (int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1]))
-                path_p2 = (int(self.move_target_imgpos[1][0][0]), int(self.move_target_imgpos[1][0][1]))
-                img = cv2.line(img, path_p1, path_p2, (0, 0, 255), 1, 4)
-            if self.detect_success_flag and self.move_target_flag and self.serialport_flag:
-                # 更新移动目标位置
-                worldpoints = np.array([[self.move_target_x, self.move_target_y, self.target_depth]])
-                self.move_target_imgpos = imageprocess.project_point(worldpoints, self.cam_K, self.cam_D)
-                move_target_point = (int(self.move_target_imgpos[0][0][0]), int(self.move_target_imgpos[0][0][1]))
-                img = cv2.circle(img, move_target_point, 15, (255,255,0), 4)
-                #target_p1 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]-5))
-                #target_p2 = (int(self.move_target_imgpos[0][0][0]-5), int(self.move_target_imgpos[0][0][1]+5))
-                #target_p3 = (int(self.move_target_imgpos[0][0][0]+5), int(self.move_target_imgpos[0][0][1]))
-                #img = cv2.line(img, target_p1, target_p2, (0, 0, 255), 3, 4)
-                #img = cv2.line(img, target_p2, target_p3, (0, 0, 255), 3, 4)
-                #img = cv2.line(img, target_p3, target_p1, (0, 0, 255), 3, 4)
+           
             
 
         result = img
@@ -951,7 +1017,16 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         # Todo:加入要发送什么的指令和数据
         data = struct.pack("f", self.now_position[0]) + struct.pack("f", self.now_position[1]) + struct.pack("f", self.now_angle)
         if self.move_target_flag:
-            data = struct.pack("f", self.relative_pos[0]) + struct.pack("f", self.relative_pos[1]) + struct.pack("f", self.relative_angle)
+            if self.vision_mode == 1:
+                data = struct.pack("f", self.relative_pos[0]) + struct.pack("f", self.relative_pos[1]) + struct.pack("f", self.relative_angle)
+                print('stage 1')
+            elif self.vision_mode == 2:
+                data = struct.pack("f", self.relative_pos[0]) + struct.pack("f", self.relative_pos[1]) + struct.pack("f", self.relative_angle) \
+                    + struct.pack("f", self.target_angle_at_fish)
+                print('stage 2')
+            else:
+                print('stage 0')
+                return
         datapack = self.rftool.RFLink_packdata(rflink.Command.SET_GLOBAL_POS.value, data) # 发送全局视觉数据
         try:
             self.serialtool.write_cmd(datapack)
@@ -996,49 +1071,54 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
     def open_camera_button_slot(self):
         if self.camera_flag:
             return
-        # 创建一个device
-        # create a device manager
-        self.cam_device_manager = gx.DeviceManager()
-        dev_num, dev_info_list = self.cam_device_manager.update_device_list()
-        if dev_num is 0:
-            self.statusBar().showMessage("相机设备数量为0，无法打开相机")
-            return
-        # open the first device
-        self.cam = self.cam_device_manager.open_device_by_index(1)
-        # exit when the camera is a mono camera
-        if self.cam.PixelColorFilter.is_implemented() is False:
-            self.statusBar().showMessage("本程序不支持单色相机")
-            self.cam.close_device()
-            return
-        # set trigger mode
-        if dev_info_list[0].get("device_class") == gx.GxDeviceClassList.USB2:
+        
+        if self.camera_type == 'WebCam':
+            self.webcam = cv2.VideoCapture(0)
+        elif self.camera_type == 'GlobalCam': 
+            # 创建一个device
+            # create a device manager
+            self.cam_device_manager = gx.DeviceManager()
+            dev_num, dev_info_list = self.cam_device_manager.update_device_list()
+            if dev_num is 0:
+                self.statusBar().showMessage("相机设备数量为0，无法打开相机")
+                return
+            # open the first device
+            self.cam = self.cam_device_manager.open_device_by_index(1)
+            # exit when the camera is a mono camera
+            if self.cam.PixelColorFilter.is_implemented() is False:
+                self.statusBar().showMessage("本程序不支持单色相机")
+                self.cam.close_device()
+                return
             # set trigger mode
-            self.cam.TriggerMode.set(gx.GxSwitchEntry.ON)
-        else:
-            # set trigger mode and trigger source
-            self.cam.TriggerMode.set(gx.GxSwitchEntry.ON)
-            self.cam.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
-        # set exposure
-        self.cam.ExposureTime.set(self.cam_exposure)
-        # set gain
-        self.cam.Gain.set(10.0)
-        # get param of improving image quality
-        if self.cam.GammaParam.is_readable():
-            gamma_value = self.cam.GammaParam.get()
-            self.cam_gamma_lut = gx.Utility.get_gamma_lut(gamma_value)
-        else:
-            self.cam_gamma_lut = None
-        if self.cam.ContrastParam.is_readable():
-            contrast_value = self.cam.ContrastParam.get()
-            self.cam_contrast_lut = gx.Utility.get_contrast_lut(contrast_value)
-        else:
-            self.cam_contrast_lut = None
-        if self.cam.ColorCorrectionParam.is_readable():
-            self.cam_color_correction_param = self.cam.ColorCorrectionParam.get()
-        else:
-            self.cam_color_correction_param = 0
-        # 打开camera stream
-        self.cam.stream_on()
+            if dev_info_list[0].get("device_class") == gx.GxDeviceClassList.USB2:
+                # set trigger mode
+                self.cam.TriggerMode.set(gx.GxSwitchEntry.ON)
+            else:
+                # set trigger mode and trigger source
+                self.cam.TriggerMode.set(gx.GxSwitchEntry.ON)
+                self.cam.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
+            # set exposure
+            self.cam.ExposureTime.set(self.cam_exposure)
+            # set gain
+            self.cam.Gain.set(10.0)
+            # get param of improving image quality
+            if self.cam.GammaParam.is_readable():
+                gamma_value = self.cam.GammaParam.get()
+                self.cam_gamma_lut = gx.Utility.get_gamma_lut(gamma_value)
+            else:
+                self.cam_gamma_lut = None
+            if self.cam.ContrastParam.is_readable():
+                contrast_value = self.cam.ContrastParam.get()
+                self.cam_contrast_lut = gx.Utility.get_contrast_lut(contrast_value)
+            else:
+                self.cam_contrast_lut = None
+            if self.cam.ColorCorrectionParam.is_readable():
+                self.cam_color_correction_param = self.cam.ColorCorrectionParam.get()
+            else:
+                self.cam_color_correction_param = 0
+            # 打开camera stream
+            self.cam.stream_on()
+
         # 开启计时器
         self.timer.start()
         self.camera_flag = True
@@ -1051,8 +1131,11 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
             return
         try:
             self.timer.stop()
-            self.cam.stream_off()
-            self.cam.close_device()
+            if self.camera_type == 'WebCam':
+                self.webcam.release()
+            elif self.camera_type == 'GlobalCam': 
+                self.cam.stream_off()
+                self.cam.close_device()
             self.camera_flag = False
             self.detection_flag = False
             self.velocity_flag = False
@@ -1072,6 +1155,16 @@ class GLOBALVISION(QtWidgets.QMainWindow): # 主窗口
         self.detection_flag = False
         st = self.statusbar_text()
         self.statusBar().showMessage(st)
+
+    def once_start_button_slot(self):
+        self.open_camera_button_slot()
+        time.sleep(3)
+        self.enable_detect_button_slot()
+        time.sleep(1)
+        self.record_video_button_slot()
+        time.sleep(1)
+        self.serial_open_button_slot()
+        time.sleep(1)
 
     def yellow_marker_checkbox_slot(self):
         if self.yellow_marker_checkbox.isChecked():
